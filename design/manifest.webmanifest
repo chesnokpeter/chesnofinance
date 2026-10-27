@@ -1,0 +1,18 @@
+{
+  "id": "./",
+  "name": "Чесно — расходы и доходы",
+  "short_name": "Чесно",
+  "description": "Счета, расходы и доходы на вашем устройстве. Работает без интернета.",
+  "lang": "ru",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0f0f10",
+  "theme_color": "#0f0f10",
+  "categories": ["finance", "productivity"],
+  "icons": [
+    { "src": "icons/icon192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icons/icon512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

@@ -1,177 +1,269 @@
-/* Interactive design study: demo data stays in memory until page reload. */
-(() => {
-  'use strict';
-  const $ = selector => document.querySelector(selector);
-  const $$ = selector => [...document.querySelectorAll(selector)];
-  const icon = name => `<svg aria-hidden="true"><use href="#${name}"/></svg>`;
-  const escape = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
-  const TODAY = '2026-10-27';
-  const MONTHS = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
-  const shortDate = new Intl.DateTimeFormat('ru-RU',{day:'numeric',month:'short',timeZone:'UTC'});
-  const longDate = new Intl.DateTimeFormat('ru-RU',{day:'numeric',month:'long',timeZone:'UTC'});
-  const money = cents => new Intl.NumberFormat('ru-RU',{minimumFractionDigits:cents % 100 === 0 ? 0 : 2,maximumFractionDigits:2}).format(cents/100);
-  const signedMoney = cents => `${cents > 0 ? '+' : cents < 0 ? '−' : ''}${money(Math.abs(cents))}`;
-  const dateObject = date => new Date(`${date}T12:00:00Z`);
-  const accounts = [
-    {id:'main',name:'Основной',opening:809000,description:'На каждый день'},
-    {id:'savings',name:'Накопления',opening:5000000,description:'На то, что важно'},
-    {id:'cash',name:'Наличные',opening:410000,description:'Всегда под рукой'}
-  ];
-  const categories = {
-    expense:[
-      {id:'food',name:'Еда',icon:'food',subs:[{id:'groceries',name:'Продукты'},{id:'coffee',name:'Кофе',icon:'coffee'},{id:'restaurants',name:'Рестораны'}]},
-      {id:'transport',name:'Транспорт',icon:'travel',subs:[{id:'taxi',name:'Такси'},{id:'metro',name:'Метро'},{id:'car',name:'Авто'}]},
-      {id:'shopping',name:'Покупки',icon:'wallet',subs:[{id:'clothes',name:'Одежда'},{id:'home',name:'Для дома'},{id:'tech',name:'Техника'}]}
-    ],
-    income:[
-      {id:'work',name:'Работа',icon:'work',subs:[{id:'salary',name:'Зарплата'},{id:'freelance',name:'Фриланс'},{id:'bonus',name:'Премия'}]},
-      {id:'other',name:'Другое',icon:'wallet',subs:[{id:'gift',name:'Подарки'},{id:'refund',name:'Возврат'},{id:'interest',name:'Проценты'}]}
-    ]
+import { accountBalance, totalBalance, monthlyTransactions, monthlyTotal, monthlyStats, localToday, parseMoney, formatMoney, saveTransaction, deleteTransaction } from './model.js';
+import { openStore } from './store.js';
+import { createManagement } from './management.js';
+import { initPWA } from './pwa.js';
+
+const $ = selector => document.querySelector(selector);
+const $$ = selector => [...document.querySelectorAll(selector)];
+const escape = value => String(value ?? '').replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
+const icon = name => `<svg aria-hidden="true"><use href="#${name}"/></svg>`;
+const MONTHS = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+const longDate = new Intl.DateTimeFormat('ru-RU', {day:'numeric',month:'long'});
+const shortDate = new Intl.DateTimeFormat('ru-RU', {day:'numeric',month:'short'});
+const ui = {view:'home',month:localToday().slice(0,7),accountId:null,statType:'expense',expanded:new Set(),entryOpen:false,pickerOpen:false,saving:false,entry:null,lastAccountId:null};
+let data, store, management, entryReturnFocus, pickerReturnFocus, toastTimer;
+
+function account(id) { return data.accounts.find(item => item.id === id); }
+function categoryInfo(type, categoryId, subcategoryId) {
+  const category = data.categories[type]?.find(item => item.id === categoryId);
+  return {category,sub:category?.subs.find(item => item.id === subcategoryId)};
+}
+function dateObject(value) { return new Date(`${value}T12:00:00`); }
+function signed(value) { return `${value > 0 ? '+' : value < 0 ? '−' : ''}${formatMoney(Math.abs(value))}`; }
+function plural(count) { const n=count%100;return n>=11&&n<=14?'операций':count%10===1?'операция':count%10>=2&&count%10<=4?'операции':'операций'; }
+function toast(message, error=false) {
+  $('#toast').textContent=message;$('#toast').classList.toggle('error',Boolean(error));$('#toast').hidden=false;
+  clearTimeout(toastTimer);toastTimer=setTimeout(()=>{$('#toast').hidden=true;},error?6500:3800);
+}
+function applyData(next) {
+  if(data&&next.revision<data.revision)return;
+  data=next;
+  if(ui.accountId&&!account(ui.accountId))ui.accountId=null;
+  if(ui.lastAccountId&&!account(ui.lastAccountId))ui.lastAccountId=null;
+  render();
+  if(ui.entryOpen)renderEntry();
+}
+function transactionDelta(transaction) {
+  if(transaction.type==='transfer')return ui.accountId?(transaction.toAccountId===ui.accountId?transaction.amountCents:-transaction.amountCents):0;
+  return transaction.type==='income'?transaction.amountCents:-transaction.amountCents;
+}
+function render() {
+  if(!data)return;
+  $('#balance').textContent=formatMoney(totalBalance(data));
+  $('#balance').parentElement.classList.toggle('long-balance',$('#balance').textContent.length>14);
+  $('#history-scope').textContent=ui.accountId?account(ui.accountId).name:'Все счета';
+  $('#account-balances').innerHTML=data.accounts.map(item=>`<button class="balance-account" data-balance-account="${item.id}" aria-pressed="${ui.accountId===item.id}" aria-label="${escape(item.name)}: ${formatMoney(accountBalance(data,item.id))} рублей. Фильтр операций">${icon('wallet')}<span class="balance-account-name">${escape(item.name)}</span><strong class="balance-account-value">${formatMoney(accountBalance(data,item.id))} <small>₽</small></strong><span class="balance-account-check" aria-hidden="true">${icon('check')}</span></button>`).join('');
+  $$('#account-balances button').forEach(button=>button.onclick=()=>{const id=button.dataset.balanceAccount;ui.accountId=ui.accountId===id?null:id;render();$$('#account-balances button').find(item=>item.dataset.balanceAccount===id)?.focus({preventScroll:true});});
+  $('#expense').innerHTML=`${formatMoney(monthlyTotal(data,{month:ui.month,accountId:ui.accountId,type:'expense'}))} <small>₽</small>`;
+  $('#income').innerHTML=`${formatMoney(monthlyTotal(data,{month:ui.month,accountId:ui.accountId,type:'income'}))} <small>₽</small>`;
+  const [year,month]=ui.month.split('-').map(Number);
+  $('#month-label').textContent=MONTHS[month-1]+(year!==new Date().getFullYear()?` ${year}`:'');
+  $('#stats-month-label').textContent=`${MONTHS[month-1]} ${year}`;
+  $('#stats-accounts').textContent=ui.accountId?account(ui.accountId).name:'Все счета';
+  renderHistory();renderStats();
+}
+function renderHistory() {
+  const transactions=monthlyTransactions(data,{month:ui.month,accountId:ui.accountId}).slice().sort((left,right)=>right.date.localeCompare(left.date)||right.createdAt.localeCompare(left.createdAt)||right.id.localeCompare(left.id));
+  if(!transactions.length){
+    $('#history').innerHTML=`<div class="empty-state">${icon('list')}<strong>Пока нет операций</strong><p>${data.transactions.length?'В этом месяце и на этом счёте ещё нет записей.':'Добавь первый расход или доход — всё сохранится на этом устройстве.'}</p><button class="empty-add" id="first-operation">Добавить операцию</button></div>`;
+    $('#first-operation').onclick=()=>openEntry();return;
+  }
+  const groups=new Map();for(const transaction of transactions){if(!groups.has(transaction.date))groups.set(transaction.date,[]);groups.get(transaction.date).push(transaction);}
+  const today=localToday(),yesterday=new Date();yesterday.setDate(yesterday.getDate()-1);
+  $('#history').innerHTML=[...groups].map(([date,items])=>{
+    const label=date===today?'Сегодня':date===localToday(yesterday)?'Вчера':longDate.format(dateObject(date));
+    const total=items.reduce((sum,item)=>sum+transactionDelta(item),0);
+    return `<section class="day-group"><header class="day-header"><h2>${escape(label)}${date===today||date===localToday(yesterday)?`<small>${escape(shortDate.format(dateObject(date)))}</small>`:''}</h2><span class="day-total">${signed(total)} ₽</span></header>${items.map(transactionRow).join('')}</section>`;
+  }).join('');
+  $$('#history [data-transaction]').forEach(button=>button.onclick=()=>openEntry(button.dataset.transaction));
+}
+function transactionRow(transaction) {
+  const transfer=transaction.type==='transfer';
+  const {category,sub}=categoryInfo(transaction.type,transaction.categoryId,transaction.subcategoryId);
+  const title=transaction.description||(transfer?'Перевод между счетами':sub?.name||category?.name||'Операция');
+  const meta=transfer?`${account(transaction.accountId).name} → ${account(transaction.toAccountId).name}`:`${category.name} · ${sub.name}${ui.accountId?'':` · ${account(transaction.accountId).name}`}`;
+  const delta=transactionDelta(transaction);
+  const prefix=transfer&&!ui.accountId?'↔ ':delta>0?'+':'−';
+  return `<button class="transaction" data-transaction="${transaction.id}" aria-label="${escape(title)}, ${prefix}${formatMoney(transaction.amountCents)} рублей. Изменить">`+
+    `<span class="transaction-icon">${icon(transfer?'transfer':category.icon)}</span><span class="transaction-info"><span class="transaction-title">${escape(title)}</span><span class="transaction-meta">${escape(meta)}</span></span><span class="transaction-amount ${delta>0?'positive':''}">${prefix}${formatMoney(transaction.amountCents)}<span class="currency"> ₽</span></span></button>`;
+}
+function renderStats() {
+  const stats=monthlyStats(data,{month:ui.month,accountId:ui.accountId,type:ui.statType});
+  $('#stats-total').textContent=formatMoney(stats.total);$('#stats-count').textContent=`${stats.count} ${plural(stats.count)} за месяц`;
+  $$('[data-stat-type]').forEach(button=>{const selected=button.dataset.statType===ui.statType;button.classList.toggle('active',selected);button.setAttribute('aria-pressed',String(selected));});
+  const max=Math.max(...stats.daily,1);
+  $('#daily-chart').innerHTML=stats.daily.map((value,index)=>`<span class="daily-bar ${value?'active':''}" style="height:${value?Math.max(4,value/max*100):2}%" title="${index+1}: ${formatMoney(value)} ₽" aria-hidden="true"></span>`).join('');
+  $('#daily-chart').setAttribute('aria-label',`${ui.statType==='expense'?'Расходы':'Доходы'} по дням: ${stats.daily.map((value,index)=>value?`${index+1} число — ${formatMoney(value)} рублей`:'').filter(Boolean).join('; ')||'нет операций'}`);
+  const monthShort=shortDate.format(dateObject(`${ui.month}-01`)).replace(/^1\s*/,'');
+  $$('.chart-axis span').forEach((span,index)=>span.textContent=`${[1,15,stats.daily.length][index]} ${monthShort}`);
+  $('#breakdown').innerHTML=stats.byCategory.length?stats.byCategory.map(category=>{
+    const expanded=ui.expanded.has(`${ui.statType}:${category.id}`);
+    return `<button class="category-stat" data-category="${category.id}" aria-expanded="${expanded}"><span class="stat-top"><span class="stat-icon">${icon(category.icon)}</span><span class="stat-name">${escape(category.name)}</span><strong class="stat-amount">${formatMoney(category.total)} ₽</strong><span class="stat-share">${Math.round(category.total/stats.total*100)}%</span></span><span class="stat-track"><i style="width:${category.total/stats.total*100}%"></i></span><span class="stat-detail" ${expanded?'':'hidden'}>${category.subs.map(sub=>`<span class="subrow"><span>${escape(sub.name)}</span><strong>${formatMoney(sub.total)} ₽</strong></span>`).join('')}</span></button>`;
+  }).join(''):'<div class="empty-state"><strong>Здесь появятся категории</strong><p>Добавь операцию, чтобы увидеть распределение.</p></div>';
+  $$('#breakdown [data-category]').forEach(button=>button.onclick=()=>{const key=`${ui.statType}:${button.dataset.category}`;if(ui.expanded.has(key))ui.expanded.delete(key);else ui.expanded.add(key);const expanded=ui.expanded.has(key);button.setAttribute('aria-expanded',String(expanded));button.querySelector('.stat-detail').hidden=!expanded;});
+}
+function showView(view) {
+  ui.view=view;$('#home-view').hidden=view!=='home';$('#stats-view').hidden=view!=='stats';$('#screen-heading').textContent=view==='stats'?'Обзор':'Операции';
+  $$('[data-view]').forEach(button=>{const active=button.dataset.view===view;button.classList.toggle('active',active);if(active)button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');});
+}
+function modalBackground() {
+  $$('.topbar,.view,.bottom-actions,#update-banner').forEach(element=>element.inert=ui.entryOpen||ui.pickerOpen);
+  $('#entry').inert=ui.pickerOpen;
+}
+function openPicker(title,content,trigger=document.activeElement) {
+  if(ui.saving)return;
+  pickerReturnFocus=trigger;$('#picker-title').textContent=title;$('#picker-content').innerHTML=content;$('#picker-error').hidden=true;
+  ui.pickerOpen=true;$('#picker-overlay').hidden=false;modalBackground();$('#close-picker').focus({preventScroll:true});
+}
+function closePicker(restore=true) {
+  if(!ui.pickerOpen||ui.saving)return;
+  ui.pickerOpen=false;$('#picker-overlay').hidden=true;modalBackground();
+  if(restore)(pickerReturnFocus?.isConnected?pickerReturnFocus:$('#add')).focus({preventScroll:true});
+}
+function pickerManagement() { closePicker(false);management.open(); }
+function openAccounts(mode='filter',trigger=document.activeElement) {
+  const selected=mode==='from'?ui.entry.accountId:mode==='to'?ui.entry.toAccountId:ui.accountId;
+  const options=mode==='filter'?[{id:null,name:'Все счета'},...data.accounts]:data.accounts;
+  openPicker(mode==='from'?'С какого счёта?':mode==='to'?'На какой счёт?':'Счета',options.map(item=>{
+    const amount=item.id?accountBalance(data,item.id):totalBalance(data);
+    return `<button class="account-option" data-pick-account="${item.id||''}" aria-pressed="${selected===item.id}"><span class="account-option-icon">${icon('wallet')}</span><span class="account-option-copy"><span>${escape(item.name)}</span><strong>${formatMoney(amount)} ₽</strong></span>${icon(selected===item.id?'check':'right')}</button>`;
+  }).join('')+'<button class="picker-manage" id="manage-accounts">Управлять счетами</button>',trigger);
+  $$('[data-pick-account]').forEach(button=>button.onclick=()=>{
+    const id=button.dataset.pickAccount||null;
+    if(mode==='filter'){ui.accountId=id;render();}
+    else {ui.entry[mode==='from'?'accountId':'toAccountId']=id;renderEntry();}
+    closePicker();
+  });
+  $('#manage-accounts').onclick=pickerManagement;
+}
+function openCategories(trigger) {
+  const entry=ui.entry;
+  openPicker('Категория и подкатегория',data.categories[entry.type].map(category=>`<section class="category-group"><h3>${icon(category.icon)}${escape(category.name)}</h3><div class="subcategory-grid">${category.subs.map(sub=>`<button class="subcategory-option" data-pick-category="${category.id}" data-pick-sub="${sub.id}" aria-pressed="${entry.categoryId===category.id&&entry.subcategoryId===sub.id}">${icon(category.icon)}<span>${escape(sub.name)}</span></button>`).join('')}</div></section>`).join('')+'<button class="picker-manage" id="manage-categories">Управлять категориями</button>',trigger);
+  $$('[data-pick-sub]').forEach(button=>button.onclick=()=>{entry.categoryId=button.dataset.pickCategory;entry.subcategoryId=button.dataset.pickSub;renderEntry();closePicker();});
+  $('#manage-categories').onclick=pickerManagement;
+}
+function openMonths(trigger) {
+  let year=Number(ui.month.slice(0,4));
+  openPicker('Месяц','',trigger);
+  function fill() {
+    $('#picker-content').innerHTML=`<div class="month-year"><button id="previous-year" aria-label="Предыдущий год" ${year<=1?'disabled':''}>${icon('left')}</button><strong>${year}</strong><button id="next-year" aria-label="Следующий год" ${year>=9999?'disabled':''}>${icon('right')}</button></div><div class="months-grid">${MONTHS.map((name,index)=>{const value=`${String(year).padStart(4,'0')}-${String(index+1).padStart(2,'0')}`;return `<button data-pick-month="${value}" aria-pressed="${value===ui.month}">${name}</button>`;}).join('')}</div><button class="picker-manage" id="current-month">Текущий месяц</button>`;
+    $('#previous-year').onclick=()=>{year--;fill();$('#previous-year').focus();};$('#next-year').onclick=()=>{year++;fill();$('#next-year').focus();};
+    $$('[data-pick-month]').forEach(button=>button.onclick=()=>{ui.month=button.dataset.pickMonth;render();closePicker();});
+    $('#current-month').onclick=()=>{ui.month=localToday().slice(0,7);render();closePicker();};
+  }
+  fill();
+}
+function openEntry(id=null) {
+  if(!data||ui.saving)return;
+  const transaction=id?data.transactions.find(item=>item.id===id):null;
+  if(id&&!transaction){toast('Эта операция уже удалена.',true);return;}
+  entryReturnFocus=document.activeElement;
+  const accountId=transaction?.accountId||ui.accountId||ui.lastAccountId||data.accounts[0].id;
+  ui.entryOriginal=transaction?JSON.stringify(transaction):null;
+  ui.entry=transaction?{...transaction}:{id:null,type:'expense',accountId,toAccountId:data.accounts.find(item=>item.id!==accountId)?.id||null,categoryId:null,subcategoryId:null};
+  ui.entryOpen=true;$('#entry').hidden=false;$('#amount').value=transaction?String(Math.floor(transaction.amountCents/100))+(transaction.amountCents%100?','+String(transaction.amountCents%100).padStart(2,'0'):''):'';
+  $('#description').value=transaction?.description||'';$('#entry-date').value=transaction?.date||localToday();$('#entry-error').hidden=true;$('#entry-title').textContent=transaction?'Изменить':'Операция';
+  $('#entry').scrollTop=0;renderEntry();modalBackground();$('#amount').focus({preventScroll:true});
+}
+function closeEntry(restore=true) {
+  if(ui.saving)return;
+  if(ui.pickerOpen)closePicker(false);ui.entryOpen=false;$('#entry').hidden=true;modalBackground();
+  if(restore)(entryReturnFocus?.isConnected?entryReturnFocus:$('#add')).focus({preventScroll:true});
+}
+function renderEntry() {
+  if(!ui.entryOpen)return;
+  const entry=ui.entry,transfer=entry.type==='transfer';
+  $$('[data-type]').forEach(button=>{const selected=button.dataset.type===entry.type;button.classList.toggle('active',selected);button.setAttribute('aria-pressed',String(selected));button.disabled=ui.saving;});
+  $('#amount-sign').textContent=transfer?'↔':entry.type==='income'?'+':'−';
+  $('#entry-account-name').textContent=account(entry.accountId)?.name||'Выбрать счёт';
+  $('#entry-to-account').hidden=!transfer;$('#entry-to-account-name').textContent=account(entry.toAccountId)?.name||'Выбрать второй счёт';
+  $('#entry-category').hidden=transfer;
+  const {category,sub}=categoryInfo(entry.type,entry.categoryId,entry.subcategoryId);
+  $('#entry-category').classList.toggle('chosen',Boolean(category&&sub));
+  $('#entry-category-name').textContent=category&&sub?`${category.name} · ${sub.name}`:'Категория и подкатегория';
+  $('#entry-category-icon use').setAttribute('href',`#${category?.icon||'list'}`);
+  $('#delete-operation').hidden=!entry.id;$('#save').textContent=ui.saving?'Сохраняю…':entry.id?'Сохранить':'Добавить';
+  $('#recent-pairs').hidden=transfer;
+  if(!transfer){
+    const pairs=[],seen=new Set();
+    const consider=(categoryId,subcategoryId)=>{const info=categoryInfo(entry.type,categoryId,subcategoryId),key=categoryId+':'+subcategoryId;if(info.sub&&!seen.has(key)){seen.add(key);pairs.push({category:info.category,sub:info.sub});}};
+    data.transactions.filter(item=>item.type===entry.type).slice().sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt)).forEach(item=>consider(item.categoryId,item.subcategoryId));
+    data.categories[entry.type].forEach(item=>consider(item.id,item.subs[0].id));
+    $('#recent-pairs').innerHTML=pairs.slice(0,3).map(({category,sub})=>`<button class="recent-pair ${entry.categoryId===category.id&&entry.subcategoryId===sub.id?'selected':''}" data-recent-category="${category.id}" data-recent-sub="${sub.id}" title="${escape(category.name+' · '+sub.name)}">${icon(category.icon)}<span>${escape(sub.name)}</span></button>`).join('');
+    $$('[data-recent-sub]').forEach(button=>button.onclick=()=>{entry.categoryId=button.dataset.recentCategory;entry.subcategoryId=button.dataset.recentSub;renderEntry();});
+  }
+  $('#amount').disabled=ui.saving;$('#description').disabled=ui.saving;$('#entry-date').disabled=ui.saving;
+  $$('#entry-account,#entry-to-account,#entry-category,#close-entry,#delete-operation,#entry [data-key],#entry [data-recent-sub]').forEach(button=>button.disabled=ui.saving);
+  updateAmount();
+}
+function sanitizeAmount(raw) {
+  const parts=raw.replace(/\./g,',').replace(/[^0-9,]/g,'').split(',');
+  return (parts[0].slice(0,9).replace(/^0+(?=\d)/,'')||(parts.length>1?'0':''))+(parts.length>1?','+parts.slice(1).join('').slice(0,2):'');
+}
+function updateAmount() {
+  const input=$('#amount');input.value=sanitizeAmount(input.value);
+  const length=Math.max(input.value.length,1),size=Math.max(30,Math.min(64,64-Math.max(length-5,0)*5));
+  input.style.fontSize=`${size}px`;input.style.width=`${Math.min(240,Math.max(size*.65,length*size*.6))}px`;
+  let amount=0;try{amount=parseMoney(input.value);}catch{}
+  const entry=ui.entry;if(!entry)return;
+  const {category,sub}=categoryInfo(entry.type,entry.categoryId,entry.subcategoryId);
+  const validAccount=Boolean(account(entry.accountId));
+  const validCategory=entry.type==='transfer'?Boolean(account(entry.toAccountId)&&entry.accountId!==entry.toAccountId):Boolean(category&&sub);
+  const date=$('#entry-date').value,parsedDate=new Date(`${date}T12:00:00Z`),validDate=/^\d{4}-\d{2}-\d{2}$/.test(date)&&!Number.isNaN(parsedDate.getTime())&&parsedDate.toISOString().slice(0,10)===date;
+  $('#save').disabled=ui.saving||!(amount>0&&validAccount&&validCategory&&validDate);
+  $('#entry-hint').textContent=ui.saving?'Сохраняю на устройстве…':amount<=0?'Введи сумму':!validAccount?'Выбери счёт':!validCategory?(entry.type==='transfer'?'Выбери два разных счёта':'Выбери категорию и подкатегорию'):!validDate?'Выбери дату':'';
+}
+async function saveEntry() {
+  updateAmount();if($('#save').disabled)return;
+  const entry={...ui.entry,amountCents:parseMoney($('#amount').value),date:$('#entry-date').value,description:$('#description').value.trim()};
+  if(entry.type==='transfer'){entry.categoryId=null;entry.subcategoryId=null;}else entry.toAccountId=null;
+  const original=ui.entryOriginal;
+  const previousMonth=ui.month;ui.saving=true;$('#entry-error').hidden=true;renderEntry();
+  try {
+    const next=await store.update(draft=>{
+      if(entry.id&&JSON.stringify(draft.transactions.find(item=>item.id===entry.id))!==original)throw new Error('Операция изменилась в другой вкладке. Закройте форму и откройте запись снова.');
+      saveTransaction(draft,entry);
+    });
+    ui.saving=false;ui.lastAccountId=entry.accountId;ui.month=entry.date.slice(0,7);if(ui.accountId)ui.accountId=entry.accountId;
+    applyData(next);showView('home');closeEntry();toast(entry.id?'Изменения сохранены':'Операция добавлена');
+  } catch(error) {ui.saving=false;ui.month=previousMonth;$('#entry-error').textContent=error.message;$('#entry-error').hidden=false;renderEntry();}
+}
+function confirmDelete() {
+  const id=ui.entry?.id,original=ui.entryOriginal;if(!id)return;
+  openPicker('Удалить операцию?','<p class="confirmation-copy">Запись будет удалена, а остатки и статистика пересчитаны.</p><button class="danger-action" id="confirm-delete">Удалить операцию</button><button class="picker-manage" id="cancel-delete">Отмена</button>',$('#delete-operation'));
+  $('#cancel-delete').onclick=()=>closePicker();
+  $('#confirm-delete').onclick=async()=>{
+    if(ui.saving)return;ui.saving=true;$('#confirm-delete').disabled=true;
+    try {const next=await store.update(draft=>{if(JSON.stringify(draft.transactions.find(item=>item.id===id))!==original)throw new Error('Операция изменилась. Закройте форму и проверьте запись перед удалением.');deleteTransaction(draft,id);});ui.saving=false;applyData(next);closePicker(false);closeEntry();toast('Операция удалена');}
+    catch(error){ui.saving=false;$('#picker-error').textContent=error.message;$('#picker-error').hidden=false;$('#confirm-delete').disabled=false;}
   };
-  let nextId = 1;
-  function seed(date,title,rubles,categoryId,subId,accountId='main',type='expense',note='') {
-    return {id:nextId++,date,title,cents:rubles*100,categoryId,subId,accountId,type,note};
+}
+function trapFocus(event) {
+  if(document.querySelector('dialog[open]'))return;
+  const modal=ui.pickerOpen?$('#picker'):ui.entryOpen?$('#entry'):null;if(!modal||event.key!=='Tab')return;
+  const nodes=[...modal.querySelectorAll('button:not(:disabled),input:not(:disabled),[tabindex="0"]')].filter(element=>!element.hidden&&element.getClientRects().length>0),first=nodes[0],last=nodes[nodes.length-1];
+  if(!first){event.preventDefault();return;}
+  if(event.shiftKey&&(document.activeElement===first||!modal.contains(document.activeElement))){event.preventDefault();last.focus();}
+  else if(!event.shiftKey&&(document.activeElement===last||!modal.contains(document.activeElement))){event.preventDefault();first.focus();}
+}
+function bindEvents() {
+  $$('[data-view]').forEach(button=>button.onclick=()=>showView(button.dataset.view));
+  $$('[data-stat-type]').forEach(button=>button.onclick=()=>{ui.statType=button.dataset.statType;renderStats();});
+  $$('[data-month-picker]').forEach(button=>button.onclick=()=>openMonths(button));
+  $('#open-accounts').onclick=event=>openAccounts('filter',event.currentTarget);$('#stats-accounts').onclick=event=>openAccounts('filter',event.currentTarget);
+  $('#entry-account').onclick=event=>openAccounts('from',event.currentTarget);$('#entry-to-account').onclick=event=>openAccounts('to',event.currentTarget);$('#entry-category').onclick=event=>openCategories(event.currentTarget);
+  $('#add').onclick=()=>openEntry();$('#close-entry').onclick=()=>closeEntry();$('#close-picker').onclick=()=>closePicker();
+  $('#picker-overlay').onclick=event=>{if(event.target===event.currentTarget)closePicker();};
+  $('#settings-toggle').onclick=()=>management.open();$('#amount').oninput=updateAmount;$('#entry-date').oninput=updateAmount;$('#save').onclick=saveEntry;$('#delete-operation').onclick=confirmDelete;
+  $$('[data-type]').forEach(button=>button.onclick=()=>{ui.entry.type=button.dataset.type;ui.entry.categoryId=null;ui.entry.subcategoryId=null;if(ui.entry.type==='transfer'&&(!ui.entry.toAccountId||ui.entry.toAccountId===ui.entry.accountId))ui.entry.toAccountId=data.accounts.find(item=>item.id!==ui.entry.accountId)?.id||null;renderEntry();});
+  $$('[data-key]').forEach(button=>button.onclick=()=>{const input=$('#amount'),key=button.dataset.key;if(key==='back')input.value=input.value.slice(0,-1);else if(key===','){if(!input.value.includes(','))input.value=`${input.value||'0'},`;}else input.value+=key;updateAmount();});
+  document.addEventListener('keydown',event=>{
+    if(document.querySelector('dialog[open]'))return;
+    if(event.key==='Escape'){if(ui.pickerOpen){event.preventDefault();closePicker();}else if(ui.entryOpen){event.preventDefault();closeEntry();}}
+    trapFocus(event);
+  });
+  window.addEventListener('chesno:storage-error',event=>toast(event.detail?.message||'Не удалось обновить локальные данные.',true));
+}
+async function boot() {
+  try {
+    store=await openStore();data=await store.read();
+    management=createManagement({store,getData:()=>data,onChange:applyData,notify:toast});
+    bindEvents();store.subscribe(applyData);render();
+    $('#boot-status').hidden=true;$('#app').classList.remove('is-loading');$('#app').setAttribute('aria-busy','false');
+    void initPWA({notify:management.notify,canUpdate:()=>!ui.entryOpen&&!ui.pickerOpen&&!ui.saving&&!management.isOpen()&&!management.isBusy()});
+  } catch(error) {
+    $('#boot-message').textContent=error.message||'Не удалось открыть локальное хранилище. Перезапустите приложение.';$('#retry-boot').hidden=false;$('#app').setAttribute('aria-busy','false');
+    $('#retry-boot').onclick=()=>location.reload();
   }
-  const transactions = [
-    seed(TODAY,'ВкусВилл',2450,'food','groceries'),
-    seed(TODAY,'Кофе по пути',290,'food','coffee'),
-    seed(TODAY,'Яндекс Go',250,'transport','taxi'),
-    seed('2026-10-26','Зарплата',95000,'work','salary','main','income'),
-    seed('2026-10-26','Обед с друзьями',680,'food','restaurants'),
-    seed('2026-10-24','Продукты на неделю',4320,'food','groceries'),
-    seed('2026-10-23','Такси за неделю',4272,'transport','taxi'),
-    seed('2026-10-22','Кофейни',1570,'food','coffee'),
-    seed('2026-10-21','Новая рубашка',3500,'shopping','clothes'),
-    seed('2026-10-19','Рынок',2240,'food','groceries','cash'),
-    seed('2026-10-17','Ужин в городе',2320,'food','restaurants'),
-    seed('2026-10-15','Поездка домой',1260,'transport','taxi','cash'),
-    seed('2026-10-12','Тройка',2100,'transport','metro'),
-    seed('2026-10-10','Мелочи для дома',2248,'shopping','home'),
-    seed('2026-10-08','Кофе с собой',500,'food','coffee','cash'),
-    seed('2026-10-05','В аэропорт',740,'transport','taxi')
-  ];
-  const state = {view:'home',account:null,month:'2026-10',query:'',statType:'expense',entryOpen:false,pickerOpen:false,entry:{type:'expense',account:'main',category:null,sub:null},expanded:new Set()};
-  let entryReturnFocus, pickerReturnFocus, toastTimer;
-  const account = id => accounts.find(item=>item.id===id);
-  function categoryInfo(type,id,subId) {const category=categories[type].find(item=>item.id===id);return {category,sub:category?.subs.find(item=>item.id===subId)};}
-  function balance(id) {return account(id).opening + transactions.reduce((sum,t)=>sum+(t.accountId===id?(t.type==='income'?t.cents:-t.cents):0),0);}
-  function monthlyTransactions() {return transactions.filter(t=>t.date.startsWith(state.month)&&(!state.account||t.accountId===state.account));}
-  function monthlyTotal(type) {return monthlyTransactions().filter(t=>t.type===type).reduce((sum,t)=>sum+t.cents,0);}
-  function monthParts() {const [year,month]=state.month.split('-').map(Number);return {year,month,name:MONTHS[month-1]};}
-  function operationWord(count) {const last=count%10,two=count%100;if(last===1&&two!==11)return 'операция';if(last>=2&&last<=4&&(two<12||two>14))return 'операции';return 'операций';}
-  function render() {
-    const {name,year}=monthParts();
-    $('#balance').textContent=money(accounts.reduce((sum,a)=>sum+balance(a.id),0));
-    $('#history-scope').textContent=state.account?account(state.account).name:'Все счета';
-    $('#account-balances').innerHTML=accounts.map(a=>`<button class="balance-account" data-balance-account="${a.id}" aria-pressed="${state.account===a.id}" aria-label="${escape(a.name)}: ${money(balance(a.id))} рублей. Фильтр операций">${icon('wallet')}<span class="balance-account-name">${escape(a.name)}</span><strong class="balance-account-value">${money(balance(a.id))} <small>₽</small></strong><span class="balance-account-check" aria-hidden="true">${icon('check')}</span></button>`).join('');
-    $$('#account-balances button').forEach(b=>b.onclick=()=>{const id=b.dataset.balanceAccount;state.account=state.account===id?null:id;render();$$('#account-balances button').find(row=>row.dataset.balanceAccount===id)?.focus({preventScroll:true});});
-    $('#expense').innerHTML=`${money(monthlyTotal('expense'))} <small>₽</small>`;
-    $('#income').innerHTML=`${money(monthlyTotal('income'))} <small>₽</small>`;
-    $('#month-label').textContent=name;$('#stats-month-label').textContent=`${name} ${year}`;
-    $('#stats-accounts').textContent=state.account?account(state.account).name:'Все счета';
-    renderHistory();renderStats();
-  }
-  function renderHistory() {
-    const query=state.query.trim().toLocaleLowerCase('ru-RU');
-    const filtered=monthlyTransactions().filter(t=>{if(!query)return true;const {category,sub}=categoryInfo(t.type,t.categoryId,t.subId);return [t.title,t.note,category.name,sub.name,account(t.accountId).name,money(t.cents)].join(' ').toLocaleLowerCase('ru-RU').includes(query);}).sort((a,b)=>b.date.localeCompare(a.date));
-    if(!filtered.length){$('#history').innerHTML=`<div class="empty-state">${icon(query?'search':'list')}<strong>${query?'Ничего не найдено':'Пока тихо'}</strong><p>${query?'Попробуй другое название или категорию.':'В этом месяце ещё нет операций.'}</p></div>`;return;}
-    const groups=new Map();for(const t of filtered){if(!groups.has(t.date))groups.set(t.date,[]);groups.get(t.date).push(t);}
-    $('#history').innerHTML=[...groups].map(([date,items])=>{
-      const total=items.reduce((sum,t)=>sum+(t.type==='income'?t.cents:-t.cents),0);
-      const relative=date===TODAY?'Сегодня':date==='2026-10-26'?'Вчера':'';
-      const label=relative?`${relative}<small>${shortDate.format(dateObject(date)).replace('.','')}</small>`:escape(longDate.format(dateObject(date)));
-      return `<section class="day-group"><header class="day-header"><h2>${label}</h2><span class="day-total">${signedMoney(total)} ₽</span></header>${items.map(transactionRow).join('')}</section>`;
-    }).join('');
-  }
-  function transactionRow(t) {
-    const {category,sub}=categoryInfo(t.type,t.categoryId,t.subId);
-    const meta=`${category.name} · ${sub.name}${state.account?'':` · ${account(t.accountId).name}`}`;
-    return `<article class="transaction"><div class="transaction-icon">${icon(sub.icon||category.icon)}</div><div class="transaction-info"><div class="transaction-title">${escape(t.title)}</div><div class="transaction-meta">${escape(meta)}</div></div><div class="transaction-amount ${t.type==='income'?'positive':''}">${t.type==='income'?'+':'−'}${money(t.cents)}<span class="currency"> ₽</span></div></article>`;
-  }
-  function renderStats() {
-    const items=monthlyTransactions().filter(t=>t.type===state.statType),total=items.reduce((sum,t)=>sum+t.cents,0);
-    $('#stats-total').textContent=money(total);$('#stats-count').textContent=`${items.length} ${operationWord(items.length)} за месяц`;
-    $$('[data-stat-type]').forEach(b=>{b.classList.toggle('active',b.dataset.statType===state.statType);b.setAttribute('aria-pressed',String(b.dataset.statType===state.statType));});
-    const {year,month}=monthParts(),days=new Date(Date.UTC(year,month,0)).getUTCDate(),daily=Array(days).fill(0);
-    items.forEach(t=>{daily[Number(t.date.slice(-2))-1]+=t.cents;});const max=Math.max(...daily,1);
-    $('#daily-chart').innerHTML=daily.map((value,i)=>`<span class="daily-bar ${value?'active':''}" style="height:${value?Math.max(4,value/max*100):2}%" title="${i+1}: ${money(value)} ₽" aria-hidden="true"></span>`).join('');
-    $('#daily-chart').setAttribute('aria-label',`${state.statType==='expense'?'Расходы':'Доходы'} по дням: ${daily.map((value,i)=>value?`${i+1} число — ${money(value)} рублей`:'').filter(Boolean).join('; ')||'нет операций'}`);
-    const monthShort=shortDate.format(new Date(Date.UTC(year,month-1,1))).replace(/^1\s*/,'').replace('.','');
-    $$('.chart-axis span').forEach((span,i)=>{span.textContent=`${[1,15,days][i]} ${monthShort}`;});
-    const groups=categories[state.statType].map(category=>{const group=items.filter(t=>t.categoryId===category.id);return {category,items:group,total:group.reduce((sum,t)=>sum+t.cents,0)};}).filter(g=>g.total>0).sort((a,b)=>b.total-a.total);
-    if(!groups.length){$('#breakdown').innerHTML=`<div class="empty-state">${icon('chart')}<strong>Здесь появятся категории</strong><p>Добавь ${state.statType==='expense'?'расход':'доход'}, чтобы увидеть распределение.</p></div>`;return;}
-    $('#breakdown').innerHTML=groups.map(({category,items:group,total:categoryTotal})=>{
-      const key=`${state.statType}:${category.id}`,expanded=state.expanded.has(key);
-      const subrows=category.subs.map(sub=>{const subTotal=group.filter(t=>t.subId===sub.id).reduce((sum,t)=>sum+t.cents,0);return subTotal?`<span class="subrow"><span>${sub.name}</span><strong>${money(subTotal)} ₽</strong></span>`:'';}).join('');
-      return `<button class="category-stat" data-category="${category.id}" aria-expanded="${expanded}"><span class="stat-top"><span class="stat-icon">${icon(category.icon)}</span><span class="stat-name">${category.name}</span><strong class="stat-amount">${money(categoryTotal)} ₽</strong><span class="stat-share">${Math.round(categoryTotal/total*100)}%</span></span><span class="stat-track"><i style="width:${categoryTotal/total*100}%"></i></span><span class="stat-detail" ${expanded?'':'hidden'}>${subrows}</span></button>`;
-    }).join('');
-    $$('#breakdown .category-stat').forEach(b=>b.onclick=()=>{const key=`${state.statType}:${b.dataset.category}`,expanded=!state.expanded.has(key);if(expanded)state.expanded.add(key);else state.expanded.delete(key);b.setAttribute('aria-expanded',String(expanded));b.querySelector('.stat-detail').hidden=!expanded;});
-  }
-  function showView(view) {state.view=view;$('#home-view').hidden=view!=='home';$('#stats-view').hidden=view!=='stats';$('#screen-heading').textContent=view==='stats'?'Обзор':'Операции';$$('[data-view]').forEach(b=>{b.classList.toggle('active',b.dataset.view===view);if(b.dataset.view===view)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});}
-  function updateModalBackground() {const blocked=state.entryOpen||state.pickerOpen;$$('.topbar,.view,.bottom-actions').forEach(el=>{el.inert=blocked;});$('#entry').inert=state.pickerOpen;}
-  function openPicker(title,content,trigger) {pickerReturnFocus=trigger||document.activeElement;$('#picker-title').textContent=title;$('#picker-content').innerHTML=content;state.pickerOpen=true;$('#picker-overlay').hidden=false;updateModalBackground();$('#close-picker').focus({preventScroll:true});}
-  function closePicker(restore=true) {if(!state.pickerOpen)return;state.pickerOpen=false;$('#picker-overlay').hidden=true;updateModalBackground();if(restore&&pickerReturnFocus?.isConnected)pickerReturnFocus.focus({preventScroll:true});}
-  function openAccounts(entryMode=false,trigger) {
-    const selected=entryMode?state.entry.account:state.account,options=entryMode?accounts:[{id:null,name:'Все счета',description:'Общий остаток'},...accounts];
-    openPicker(entryMode?'С какого счёта?':'Счета',options.map(a=>{const amount=a.id?balance(a.id):accounts.reduce((sum,item)=>sum+balance(item.id),0);return `<button class="account-option ${selected===a.id?'active':''}" data-pick-account="${a.id||''}" aria-pressed="${selected===a.id}"><span class="account-option-icon">${icon('wallet')}</span><span class="account-option-copy"><span>${a.name}</span><small>${a.description}</small><strong>${money(amount)} ₽</strong></span>${selected===a.id?icon('check'):icon('right')}</button>`;}).join(''),trigger);
-    $$('[data-pick-account]').forEach(b=>b.onclick=()=>{const id=b.dataset.pickAccount||null;if(entryMode){state.entry.account=id;renderEntry();}else{state.account=id;render();}closePicker();});
-  }
-  function openMonths(trigger) {
-    openPicker('Месяц',['2026-09','2026-10','2026-11'].map(value=>{const [year,month]=value.split('-').map(Number),count=transactions.filter(t=>t.date.startsWith(value)&&(!state.account||t.accountId===state.account)).length;return `<button class="account-option ${state.month===value?'active':''}" data-pick-month="${value}" aria-pressed="${state.month===value}"><span class="account-option-icon">${icon('calendar')}</span><span class="account-option-copy"><span>${MONTHS[month-1]} ${year}</span><small>${count?`${count} ${operationWord(count)}`:'Пока нет операций'}</small></span>${state.month===value?icon('check'):icon('right')}</button>`;}).join(''),trigger);
-    $$('[data-pick-month]').forEach(b=>b.onclick=()=>{state.month=b.dataset.pickMonth;render();closePicker();});
-  }
-  function openCategories(trigger) {
-    openPicker('Категория и подкатегория',categories[state.entry.type].map(category=>`<section class="category-group"><h3>${icon(category.icon)}${category.name}</h3><div class="subcategory-grid">${category.subs.map(sub=>`<button class="subcategory-option ${state.entry.category===category.id&&state.entry.sub===sub.id?'active':''}" data-pick-category="${category.id}" data-pick-sub="${sub.id}" aria-pressed="${state.entry.category===category.id&&state.entry.sub===sub.id}">${icon(sub.icon||category.icon)}<span>${sub.name}</span></button>`).join('')}</div></section>`).join(''),trigger);
-    $$('[data-pick-sub]').forEach(b=>b.onclick=()=>{state.entry.category=b.dataset.pickCategory;state.entry.sub=b.dataset.pickSub;renderEntry();closePicker();});
-  }
-  function openEntry() {if(state.entryOpen)return;entryReturnFocus=document.activeElement;state.entryOpen=true;state.entry.type='expense';state.entry.account=state.account||state.entry.account;state.entry.category=null;state.entry.sub=null;$('#amount').value='';$('#description').value='';$('#entry').hidden=false;renderEntry();updateModalBackground();$('#amount').focus({preventScroll:true});}
-  function closeEntry(restore=true) {if(!state.entryOpen)return;if(state.pickerOpen)closePicker(false);state.entryOpen=false;$('#entry').hidden=true;updateModalBackground();if(restore&&entryReturnFocus?.isConnected)entryReturnFocus.focus({preventScroll:true});}
-  function renderEntry() {
-    $$('[data-type]').forEach(b=>{const selected=b.dataset.type===state.entry.type;b.classList.toggle('active',selected);b.setAttribute('aria-pressed',String(selected));});
-    $('#amount-sign').textContent=state.entry.type==='expense'?'−':'+';$('#entry-account-name').textContent=account(state.entry.account).name;
-    const {category,sub}=categoryInfo(state.entry.type,state.entry.category,state.entry.sub);
-    $('#entry-category').classList.toggle('chosen',Boolean(category&&sub));
-    $('#entry-category-name').innerHTML=category&&sub?`${category.name} <span>· ${sub.name}</span>`:'Категория и подкатегория';
-    $('#entry-category-icon use').setAttribute('href',`#${sub?.icon||category?.icon||'list'}`);
-    $('#entry-category').setAttribute('aria-label',category&&sub?`Категория: ${category.name}, ${sub.name}. Изменить`:'Выбрать обязательные категорию и подкатегорию');
-    const recent=state.entry.type==='expense'?[['food','groceries'],['food','coffee'],['transport','taxi']]:[['work','salary'],['work','freelance'],['other','gift']];
-    $('#recent-pairs').innerHTML=recent.map(([catId,subId])=>{const info=categoryInfo(state.entry.type,catId,subId),selected=state.entry.category===catId&&state.entry.sub===subId;return `<button class="recent-pair ${selected?'selected':''}" data-recent-category="${catId}" data-recent-sub="${subId}" aria-pressed="${selected}" title="${info.category.name} · ${info.sub.name}">${icon(info.sub.icon||info.category.icon)}<span>${info.sub.name}</span></button>`;}).join('');
-    $$('[data-recent-sub]').forEach(b=>b.onclick=()=>{state.entry.category=b.dataset.recentCategory;state.entry.sub=b.dataset.recentSub;renderEntry();});updateAmount();
-  }
-  function sanitizeAmount(raw) {const parts=raw.replace(/\./g,',').replace(/[^0-9,]/g,'').split(','),integer=parts[0].slice(0,9).replace(/^0+(?=\d)/,'');return (integer||(parts.length>1?'0':''))+(parts.length>1?`,${parts.slice(1).join('').slice(0,2)}`:'');}
-  function parseAmount(value) {if(!/^\d{1,9}(?:,\d{0,2})?$/.test(value))return 0;const [whole,fraction='']=value.split(',');return Number(whole)*100+Number(fraction.padEnd(2,'0'));}
-  function updateAmount() {
-    const input=$('#amount');input.value=sanitizeAmount(input.value);
-    const length=Math.max(input.value.length,1),fontSize=Math.max(32,Math.min(64,64-Math.max(length-5,0)*5));
-    input.style.fontSize=`${fontSize}px`;input.style.width=`${Math.min(240,Math.max(fontSize*0.65,length*fontSize*0.6))}px`;
-    const amount=parseAmount(input.value),{category,sub}=categoryInfo(state.entry.type,state.entry.category,state.entry.sub),valid=Boolean(category&&sub);
-    $('#save').disabled=!(amount>0&&valid);$('#entry-hint').textContent=amount<=0?(valid?'Введи сумму':'Введи сумму и выбери категорию'):(valid?'Готово к добавлению':'Выбери категорию и подкатегорию');
-  }
-  function saveEntry() {
-    updateAmount();if($('#save').disabled)return;
-    const {category,sub}=categoryInfo(state.entry.type,state.entry.category,state.entry.sub),description=$('#description').value.trim();
-    transactions.unshift({id:nextId++,date:TODAY,type:state.entry.type,cents:parseAmount($('#amount').value),accountId:state.entry.account,categoryId:category.id,subId:sub.id,title:description||sub.name,note:description});
-    state.month=TODAY.slice(0,7);if(state.account)state.account=state.entry.account;state.query='';$('#search-input').value='';$('#search-field').hidden=true;$('#search-toggle').setAttribute('aria-expanded','false');
-    render();showView('home');closeEntry();$('#toast').textContent='Добавлено в эскиз · до перезагрузки';$('#toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').hidden=true,2500);
-  }
-  function setSearch(open) {showView('home');$('#search-field').hidden=!open;$('#search-toggle').setAttribute('aria-expanded',String(open));if(open)$('#search-input').focus({preventScroll:true});else{state.query='';$('#search-input').value='';renderHistory();$('#search-toggle').focus({preventScroll:true});}}
-  function trapFocus(event) {
-    const modal=state.pickerOpen?$('#picker'):state.entryOpen?$('#entry'):null;if(!modal||event.key!=='Tab')return;
-    const nodes=[...modal.querySelectorAll('button:not(:disabled),input:not(:disabled),[tabindex="0"]')].filter(el=>!el.hidden&&el.getClientRects().length>0),first=nodes[0],last=nodes[nodes.length-1];
-    if(!first){event.preventDefault();return;}
-    if(event.shiftKey&&(document.activeElement===first||!modal.contains(document.activeElement))){event.preventDefault();last.focus();}
-    else if(!event.shiftKey&&(document.activeElement===last||!modal.contains(document.activeElement))){event.preventDefault();first.focus();}
-  }
-  $$('[data-view]').forEach(b=>b.onclick=()=>showView(b.dataset.view));
-  $$('[data-stat-type]').forEach(b=>b.onclick=()=>{state.statType=b.dataset.statType;renderStats();});
-  $$('[data-month-picker]').forEach(b=>b.onclick=()=>openMonths(b));
-  $('#open-accounts').onclick=e=>openAccounts(false,e.currentTarget);$('#stats-accounts').onclick=e=>openAccounts(false,e.currentTarget);
-  $('#entry-account').onclick=e=>openAccounts(true,e.currentTarget);$('#entry-category').onclick=e=>openCategories(e.currentTarget);
-  $('#add').onclick=openEntry;$('#close-entry').onclick=()=>closeEntry();$('#close-picker').onclick=()=>closePicker();
-  $('#picker-overlay').onclick=e=>{if(e.target===e.currentTarget)closePicker();};$('#search-toggle').onclick=()=>setSearch($('#search-field').hidden);
-  $('#search-input').oninput=e=>{state.query=e.target.value;renderHistory();};$('#amount').oninput=updateAmount;$('#save').onclick=saveEntry;
-  $$('[data-type]').forEach(b=>b.onclick=()=>{state.entry.type=b.dataset.type;state.entry.category=null;state.entry.sub=null;renderEntry();});
-  $$('[data-key]').forEach(b=>b.onclick=()=>{const input=$('#amount'),key=b.dataset.key;if(key==='back')input.value=input.value.slice(0,-1);else if(key===','){if(!input.value.includes(','))input.value=`${input.value||'0'},`;}else input.value+=key;updateAmount();});
-  document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(state.pickerOpen){e.preventDefault();closePicker();}else if(state.entryOpen){e.preventDefault();closeEntry();}else if(!$('#search-field').hidden){e.preventDefault();setSearch(false);}}trapFocus(e);});
-  render();const screen=new URLSearchParams(location.search).get('screen');if(screen==='stats')showView('stats');else if(screen==='entry')openEntry();else if(screen==='accounts')openAccounts(false,$('#open-accounts'));
-})();
+}
+void boot();

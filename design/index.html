@@ -4,8 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#0f0f10">
-  <title>Чесно · Ночь</title>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Чесно">
+  <meta name="description" content="Личный трекер расходов и доходов. Все данные хранятся на вашем устройстве.">
+  <title>Чесно — расходы и доходы</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" href="icons/icon192.png">
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="management.css">
 </head>
 <body>
   <svg style="display:none" aria-hidden="true"><defs>
@@ -32,38 +40,39 @@
   </defs></svg>
 
   <svg style="display:none" aria-hidden="true"><defs>
-    <symbol id="search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></symbol>
-    <symbol id="more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+    <symbol id="settings" viewBox="0 0 24 24"><path d="m10 3-.7 2.5-2 .9L5 5.5 3 9l1.8 1.7v2.6L3 15l2 3.5 2.3-.9 2 .9L10 21h4l.7-2.5 2-.9 2.3.9 2-3.5-1.8-1.7v-2.6L21 9l-2-3.5-2.3.9-2-.9L14 3z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="transfer" viewBox="0 0 24 24"><path d="M4 8h15m-4-4 4 4-4 4M20 16H5m4-4-4 4 4 4"/></symbol>
   </defs></svg>
-  <main class="app" id="app" aria-label="Чесно, дизайн-прототип">
+  <main class="app is-loading" id="app" aria-label="Чесно" aria-busy="true">
+    <section id="boot-status" class="boot-status" role="status"><p id="boot-message">Открываю данные…</p><button id="retry-boot" class="text-button" hidden>Попробовать снова</button></section>
     <header class="topbar">
       <h1 class="screen-heading" id="screen-heading">Операции</h1>
-      <button class="icon-button" id="search-toggle" aria-label="Поиск операций" aria-expanded="false"><svg><use href="#search"/></svg></button>
+      <div class="header-actions"><span id="network-status" class="network-status" hidden>Офлайн</span><button class="icon-button" id="settings-toggle" aria-label="Настройки"><svg><use href="#settings"/></svg></button></div>
     </header>
+    <div id="update-banner" class="update-banner" hidden><span>Доступно обновление</span><button id="apply-update">Обновить</button></div>
     <div id="home-view" class="view home-view">
       <section class="overview" aria-label="Сводка">
         <div class="balance-caption">Общий остаток</div>
-        <div class="balance"><span id="balance">128 450</span><span class="currency">₽</span></div>
+        <div class="balance"><span id="balance">0</span><span class="currency">₽</span></div>
         <div class="account-balances" id="account-balances" role="group" aria-label="Счета и текущие остатки"></div>
         <div class="monthly-heading">
           <button class="scope-select" id="open-accounts" aria-label="Счёт для месячных итогов и истории"><span id="history-scope">Все счета</span><svg><use href="#down"/></svg></button>
-          <button class="month-select" data-month-picker><span id="month-label">Октябрь</span><svg><use href="#down"/></svg></button>
+          <button class="month-select" data-month-picker><span id="month-label"></span><svg><use href="#down"/></svg></button>
         </div>
         <div class="month-line">
-          <div class="month-metric"><span>Расходы</span><strong id="expense">28 740 <small>₽</small></strong></div>
-          <div class="month-metric income-metric"><span>Доходы</span><strong id="income">95 000 <small>₽</small></strong></div>
+          <div class="month-metric"><span>Расходы</span><strong id="expense">0 <small>₽</small></strong></div>
+          <div class="month-metric income-metric"><span>Доходы</span><strong id="income">0 <small>₽</small></strong></div>
         </div>
       </section>
       <section class="history" aria-label="История операций">
-        <label class="search-field" id="search-field" hidden><svg><use href="#search"/></svg><input id="search-input" type="search" placeholder="Операция, категория, заметка" aria-label="Поиск по истории"></label>
         <div id="history"></div>
       </section>
     </div>
     <section id="stats-view" class="view stats-view" hidden aria-label="Статистика">
-      <div class="stats-header"><button class="month-select" data-month-picker><span id="stats-month-label">Октябрь 2026</span><svg><use href="#down"/></svg></button><button id="stats-accounts" class="text-button">Все счета</button></div>
+      <div class="stats-header"><button class="month-select" data-month-picker><span id="stats-month-label"></span><svg><use href="#down"/></svg></button><button id="stats-accounts" class="text-button">Все счета</button></div>
       <div class="stats-switch" role="group" aria-label="Тип статистики"><button class="active" data-stat-type="expense" aria-pressed="true">Расходы</button><button data-stat-type="income" aria-pressed="false">Доходы</button></div>
-      <div class="stats-total"><span id="stats-total">28 740</span><small>₽</small></div><p class="stats-count" id="stats-count">15 операций за месяц</p>
-      <div class="daily-chart" id="daily-chart" aria-label="Операции по дням месяца"></div><div class="chart-axis"><span>1 окт</span><span>15 окт</span><span>31 окт</span></div>
+      <div class="stats-total"><span id="stats-total">0</span><small>₽</small></div><p class="stats-count" id="stats-count"></p>
+      <div class="daily-chart" id="daily-chart" aria-label="Операции по дням месяца"></div><div class="chart-axis"><span></span><span></span><span></span></div>
       <div class="breakdown-heading"><h1>Категории</h1><span>Сумма / доля</span></div><div id="breakdown"></div>
     </section>
     <div class="bottom-actions">
@@ -75,26 +84,29 @@
     </div>
     <section class="entry" id="entry" hidden role="dialog" aria-modal="true" aria-labelledby="entry-title">
       <header class="entry-header"><button class="cancel-button" id="close-entry">Отмена</button><h1 id="entry-title">Операция</h1><button id="save" class="save" disabled aria-label="Сохранить операцию">Добавить</button></header>
-      <div class="type-tabs" role="group" aria-label="Тип операции"><button data-type="expense" class="active" aria-pressed="true">Расход</button><button data-type="income" aria-pressed="false">Доход</button></div>
+      <div class="type-tabs" role="group" aria-label="Тип операции"><button data-type="expense" class="active" aria-pressed="true">Расход</button><button data-type="income" aria-pressed="false">Доход</button><button data-type="transfer" aria-pressed="false">Перевод</button></div>
       <div class="amount-area"><span class="amount-sign" id="amount-sign">−</span><input id="amount" aria-label="Сумма операции" inputmode="none" autocomplete="off" placeholder="0" maxlength="12"><span class="amount-rub">₽</span></div>
       <div class="entry-fields">
         <button class="entry-row" id="entry-account"><svg><use href="#wallet"/></svg><span id="entry-account-name">Основной</span><svg class="chevron"><use href="#down"/></svg></button>
+        <button class="entry-row" id="entry-to-account" hidden><svg><use href="#transfer"/></svg><span id="entry-to-account-name">Куда перевести</span><svg class="chevron"><use href="#down"/></svg></button>
         <button class="entry-row category-row" id="entry-category"><svg id="entry-category-icon"><use href="#food"/></svg><span id="entry-category-name">Категория и подкатегория</span><svg class="chevron"><use href="#right"/></svg></button>
-        <label class="entry-row note-row"><svg><use href="#note"/></svg><input id="description" type="text" placeholder="Заметка, если нужна" aria-label="Описание операции" maxlength="100"></label>
+        <label class="entry-row note-row"><svg><use href="#note"/></svg><input id="description" type="text" placeholder="Заметка, если нужна" aria-label="Описание операции" maxlength="1000"></label>
       </div>
-      <div class="entry-date">Сегодня, 27 октября</div>
+      <label class="entry-date"><span>Дата</span><input id="entry-date" type="date" aria-label="Дата операции" required></label>
       <div class="recent-pairs" id="recent-pairs" aria-label="Частые категории"></div>
+      <p id="entry-error" class="form-error" role="alert" hidden></p>
       <div class="entry-bottom"><p id="entry-hint" class="entry-hint" aria-live="polite">Введи сумму и выбери категорию</p><div class="keypad" aria-label="Цифровая клавиатура">
         <button data-key="1">1</button><button data-key="2">2</button><button data-key="3">3</button>
         <button data-key="4">4</button><button data-key="5">5</button><button data-key="6">6</button>
         <button data-key="7">7</button><button data-key="8">8</button><button data-key="9">9</button><button data-key="," class="decimal-key">,</button><button data-key="0">0</button><button data-key="back" class="backspace" aria-label="Удалить цифру"><svg><use href="#backspace"/></svg></button>
       </div></div>
+      <button id="delete-operation" class="delete-operation" hidden>Удалить операцию</button>
     </section>
     <div class="picker-overlay" id="picker-overlay" hidden>
-      <section class="picker" id="picker" role="dialog" aria-modal="true" aria-labelledby="picker-title"><div class="drag-handle"></div><header class="picker-header"><h2 id="picker-title">Выбрать счёт</h2><button class="icon-button" id="close-picker" aria-label="Закрыть выбор"><svg><use href="#close"/></svg></button></header><div id="picker-content"></div></section>
+      <section class="picker" id="picker" role="dialog" aria-modal="true" aria-labelledby="picker-title"><div class="drag-handle"></div><header class="picker-header"><h2 id="picker-title">Выбрать счёт</h2><button class="icon-button" id="close-picker" aria-label="Закрыть выбор"><svg><use href="#close"/></svg></button></header><p id="picker-error" class="form-error" role="alert" hidden></p><div id="picker-content"></div></section>
     </div>
     <div id="toast" class="toast" role="status" hidden></div>
   </main>
-  <script src="app.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>
